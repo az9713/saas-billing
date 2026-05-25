@@ -4,6 +4,18 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 This application was built using the seven-agent software factory chain in [az9713/software-factory](https://github.com/az9713/software-factory), which was created by [Claude Code](https://claude.ai/code) based on Qudrat Ullah's "software factory" recipe described in [How to Build a Software Factory with Claude Code](https://www.freecodecamp.org/news/how-to-build-software-factory-with-claude-code) on freeCodeCamp.
 
+The seven agents in the chain are:
+
+1. **codebase-researcher** — maps the relevant parts of the codebase before any code is written
+2. **story-writer** — turns the feature idea and research findings into a user story with acceptance criteria
+3. **spec-writer** — converts the approved story into a technical brief the build agents can follow
+4. **backend-builder** — implements API routes, services, database access, and backend tests
+5. **frontend-builder** — implements components, pages, and client-side tests
+6. **test-verifier** — writes acceptance tests and confirms every acceptance criterion holds
+7. **implementation-validator** — compares the implementation against the story and brief, reports gaps by severity
+
+A full session transcript showing these agents in action for the user registration feature is in [docs/software-factory-seven-agent-chain.txt](docs/software-factory-seven-agent-chain.txt).
+
 ## Getting Started
 
 First, run the development server:
