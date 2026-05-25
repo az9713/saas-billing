@@ -1,5 +1,9 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## About
+
+This application was built using the seven-agent software factory chain in [az9713/software-factory](https://github.com/az9713/software-factory), which was created by [Claude Code](https://claude.ai/code) based on Qudrat Ullah's "software factory" recipe described in [How to Build a Software Factory with Claude Code](https://www.freecodecamp.org/news/how-to-build-software-factory-with-claude-code) on freeCodeCamp.
+
 ## Getting Started
 
 First, run the development server:
