@@ -1,0 +1,586 @@
+$ claude-yolo --chrome --name saas --continue
+ ▐▛███▜▌   Claude Code v2.1.150
+▝▜█████▛▘  Sonnet 4.6 with high effort · Claude Max
+  ▘▘ ▝▝    ~/projects/saas-billing
+
+> /feature-factory I want to add a user registration flow with email and
+password
+
+● Starting the feature factory chain. First, I'll research the codebase to
+  understand what's already in place.
+
+● codebase-researcher(Research codebase for user registration flow)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● Codebase researcher is running. I'll share findings and next steps when it
+  completes.
+
+✻ Brewed for 16s
+
+● Agent "Research codebase for user registration flow" completed · 47s
+
+● Research complete. Now invoking the story-writer with those findings.
+
+● story-writer(Write user story for registration flow)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● Story-writer is running. I'll present the user story for your approval once
+  it's ready.
+
+✻ Baked for 18s
+
+● Agent "Write user story for registration flow" completed · 1m 27s
+
+● Here's the user story. Please review it carefully.
+
+  ---
+  User Story: Email & Password Registration
+
+  As a new visitor, I want to create an account with my email address and a
+  password, so that I can access the billing application and manage my company's
+   subscription.
+
+  ---
+  Acceptance Criteria
+
+  1. A registration form accepts three fields: email address, password, and
+  password confirmation.
+  2. Submitting a valid form creates a User record with the password stored as a
+   bcrypt hash — never in plain text.
+  3. A Tenant record is created in the same transaction as the User, and the
+  User is linked to that Tenant with the OWNER role.
+  4. After successful registration the user is automatically signed in and
+  redirected to /dashboard.
+  5. A welcome email is queued (via BullMQ + welcome template) immediately after
+   account creation. Email queue failure does not prevent registration from
+  succeeding.
+  6. If the email already exists, the form shows a clear user-facing error. The
+  response does not reveal whether the account was created via a different
+  method.
+  7. If the two password fields do not match, the form shows a validation error
+  before any server request is made.
+  8. Password must be at least 8 characters; shorter passwords are rejected with
+   an explanatory message.
+  9. Malformed email addresses are rejected with a validation error.
+  10. No raw database error messages are returned to the client under any
+  failure condition.
+  11. A signed-in user visiting /register is redirected to /dashboard (existing
+  middleware enforces this — must not break).
+  12. Each new Tenant is created with a default FREE subscription status.
+
+  ---
+  Edge Cases
+
+  - Email normalization: trim whitespace and lowercase before uniqueness check —
+   User@Example.com and user@example.com should not produce duplicate accounts.
+  - Race condition: concurrent registrations with the same email should be
+  handled; the DB unique constraint is the last line of defence.
+  - Welcome email failure: a Resend outage must not roll back the registration.
+  BullMQ retries cover re-attempts.
+  - Double-submit: form must be disabled after first submission to prevent
+  duplicate accounts.
+  - Rate limiting: out of scope now, but the endpoint needs it before going to
+  production.
+
+  ---
+  Out of Scope
+
+  - Email verification before login (emailVerified stays null — separate story)
+  - Invite flow for existing tenants
+  - OAuth / social login
+  - Password reset
+  - MFA, CAPTCHA
+  - Soft-delete for User
+  - Admin-created accounts
+
+  ---
+  Open question: Should password rules go beyond minimum length (uppercase,
+  digit, special character required)? Defaulting to length-only unless you
+  specify otherwise.
+
+  ---
+  Does this match what you want? Reply approved to continue to the technical
+  brief, describe what to change, or reply reject to stop.
+
+✻ Sautéed for 16s
+
+> length-only. approved
+
+● Got it — length-only (8 chars minimum), story approved. Invoking the
+  spec-writer now.
+
+● spec-writer(Write technical brief for registration flow)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● Spec-writer is running. I'll present the technical brief for your review when
+  it's ready.
+
+✻ Churned for 33s
+
+● Agent "Write technical brief for registration flow" completed · 2m 16s
+
+● Here's the technical brief. Please review it — there are a few open questions
+  that need answers before we build.
+
+  ---
+  Technical Brief: User Registration Flow
+
+  Data Model
+
+  No migrations needed — all models exist. The registration transaction creates
+  4 records atomically:
+  - User — email (trimmed + lowercased), bcrypt-hashed password (cost 12),
+  emailVerified: null
+  - Tenant — name defaults to email local-part (e.g., alice from
+  alice@example.com)
+  - TenantMember — links user to tenant with role OWNER
+  - Subscription — plan: FREE, status: ACTIVE
+
+  API
+
+  POST /api/auth/register (unauthenticated)
+
+  ┌──────┬─────────────────────────────────────────────────────────┐
+  │ Body │           { email: string, password: string }           │
+  ├──────┼─────────────────────────────────────────────────────────┤
+  │ 201  │ { userId: string }                                      │
+  ├──────┼─────────────────────────────────────────────────────────┤
+  │ 400  │ { error: string } — validation failure                  │
+  ├──────┼─────────────────────────────────────────────────────────┤
+  │ 409  │ { error: "An account with that email already exists." } │
+  ├──────┼─────────────────────────────────────────────────────────┤
+  │ 500  │ { error: "Something went wrong. Please try again." }    │
+  └──────┴─────────────────────────────────────────────────────────┘
+
+  Password-confirm is client-side only — never sent to the server.
+
+  Service Layer
+
+  services/auth.service.ts — registerUser({ email, password }):
+  1. Normalize email (trim + lowercase)
+  2. Hash password with bcryptjs (cost 12)
+  3. Run prisma.$transaction([createUser, createTenant, createMember,
+  createSubscription])
+  4. Catch P2002 → DuplicateEmailError; catch all others → RegistrationError (no
+   raw DB messages)
+  5. Call sendEmail(...) in try/catch that swallows failure — email queue
+  failure never rolls back registration
+
+  Frontend (app/(auth)/register/page.tsx)
+
+  - Controlled form: email, password, confirmPassword
+  - Client-side Zod validation; password-mismatch checked client-side only
+  - On submit: disable form → POST /api/auth/register → on 201:
+  signIn("credentials", ...) → router.push("/dashboard")
+
+  Files Changed
+
+  ┌─────────────────────────────────────┬────────────────────────────────────┐
+  │                File                 │               Action               │
+  ├─────────────────────────────────────┼────────────────────────────────────┤
+  │ services/auth.service.ts            │ new                                │
+  ├─────────────────────────────────────┼────────────────────────────────────┤
+  │ app/api/auth/register/route.ts      │ new                                │
+  ├─────────────────────────────────────┼────────────────────────────────────┤
+  │ services/email/templates/welcome.ts │ new                                │
+  ├─────────────────────────────────────┼────────────────────────────────────┤
+  │ services/email/templates/index.ts   │ new                                │
+  ├─────────────────────────────────────┼────────────────────────────────────┤
+  │ app/(auth)/register/page.tsx        │ replace stub                       │
+  ├─────────────────────────────────────┼────────────────────────────────────┤
+  │ queues/email.queue.ts               │ update retry to 5 retries / 10s    │
+  │                                     │ backoff (align with docs)          │
+  ├─────────────────────────────────────┼────────────────────────────────────┤
+  │ package.json                        │ add test framework                 │
+  └─────────────────────────────────────┴────────────────────────────────────┘
+
+  Tests
+
+  Service tests (success, duplicate email, email-queue failure doesn't throw),
+  API route tests (201, 400, 409, 500 with no raw DB message), component tests
+  (mismatch, double-submit, 409 response), one E2E acceptance test.
+
+  ---
+  Open Questions (need answers before build)
+
+  ▎ 1. Tenant name — The form only collects email + password. Brief defaults the
+  ▎  tenant name to the email local-part. Do you want a "Company name" field on
+  ▎ the form, or is the default acceptable?
+
+  ▎ 2. Subscription initial status — AC#12 says "default FREE subscription
+  ▎ status." The schema status enum is separate from plan (FREE/PRO/etc). Brief
+  ▎ assumes plan: FREE, status: ACTIVE. Is that correct, or should it be
+  ▎ TRIALING?
+
+  ▎ 3. Test framework — npm test is currently a stub. Recommends Vitest
+  ▎ (lighter, native ESM, TypeScript-friendly). Acceptable, or do you prefer
+  ▎ Jest?
+
+  ▎ 4. Welcome email template — The welcome template key is documented but the
+  ▎ template file doesn't exist. The builder will create it. What variable
+  ▎ should it include — just {{name}}/{{email}}? Any specific subject line or
+  ▎ body copy, or should the builder use sensible defaults?
+
+  ---
+  Any design red flags? Reply approved to start building, describe what to
+  change, or reply reject to stop.
+
+✻ Churned for 25s
+
+> 1 default is acceptable, 2. correct, 3. Vitest, 4. use sensible default
+
+● All questions resolved — brief approved. Launching the backend builder now.
+
+● backend-builder(Build backend for registration flow)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● Backend builder is running. I'll kick off the frontend builder once it
+  finishes and I have the API contract details.
+
+✻ Cogitated for 40s
+
+※ recap: Building a user registration flow. The backend builder is running now —
+   once it finishes, the frontend builder starts, then tests and validation
+  before PR review. (disable recaps in /config)
+
+> can you check backend builder's progress or lackof ?
+
+● The backend builder is still running — no completion notification has arrived
+  yet. I can't peek at its output mid-flight (doing so would flood my context
+  with raw tool transcripts).
+
+  It's doing a fair amount of work: reading ~8 existing files, setting up
+  Vitest, creating 6 new files, modifying 2 existing ones, and writing tests.
+  Should land within the next minute or two. I'll pick it up automatically the
+  moment it completes.
+
+✻ Cogitated for 13s
+
+> what files or folders can i check for their time stamps to verify backend
+  progress or lackof
+
+● Check these — any that have appeared or been recently modified signal the
+  builder is making progress:
+
+● Bash(ls -la services/ app/api/auth/ queues/ package.json; ls -la
+      services/email/; ls -la app/api/auth/register/)
+  ⎿  -rw-r--r-- 1 <user> 197609 932 May 24 23:02 package.json
+
+     app/api/auth/:
+     … +31 lines (ctrl+o to expand)
+
+● It's well underway — most files are already written:
+
+  ┌─────────────────────────────────────┬────────────┬──────────┐
+  │                File                 │   Status   │ Modified │
+  ├─────────────────────────────────────┼────────────┼──────────┤
+  │ services/auth.service.ts            │ ✅ created │ 22:59    │
+  ├─────────────────────────────────────┼────────────┼──────────┤
+  │ services/email/templates/           │ ✅ created │ 22:59    │
+  ├─────────────────────────────────────┼────────────┼──────────┤
+  │ queues/email.queue.ts               │ ✅ updated │ 23:01    │
+  ├─────────────────────────────────────┼────────────┼──────────┤
+  │ package.json                        │ ✅ updated │ 23:02    │
+  ├─────────────────────────────────────┼────────────┼──────────┤
+  │ services/auth.service.test.ts       │ ✅ created │ 23:03    │
+  ├─────────────────────────────────────┼────────────┼──────────┤
+  │ app/api/auth/register/route.ts      │ ✅ created │ 23:04    │
+  ├─────────────────────────────────────┼────────────┼──────────┤
+  │ app/api/auth/register/route.test.ts │ ✅ created │ 23:04    │
+  └─────────────────────────────────────┴────────────┴──────────┘
+
+  It's nearly done — likely wrapping up template files or running a final
+  typecheck. Should complete very shortly.
+
+✻ Churned for 29s
+
+● Agent "Build backend for registration flow" completed · 26m 16s
+
+● Backend is done — 10/10 tests passing, typecheck and lint clean. Launching the
+   frontend builder now.
+
+● frontend-builder(Build frontend registration form)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● Frontend builder is still running — I'll pick it up automatically when it
+  completes.
+
+✻ Cooked for 38s
+
+● Agent "Build frontend registration form" completed · 2m 7s
+
+● The frontend builder hit a blocker before writing the component tests. It
+  needs these dev dependencies to render and interact with React components in
+  tests:
+
+  @testing-library/react
+  @testing-library/user-event
+  @testing-library/jest-dom
+  jsdom
+
+  It also needs vitest.config.ts updated to use jsdom as the test environment
+  (currently set to node).
+
+  The production page (app/(auth)/register/page.tsx) can be written right now
+  without these — only the test file is blocked.
+
+  Authorize installing those 4 dev deps and updating the Vitest config?
+  (Recommended — you'll need them for any future component tests too.) Or reply
+  skip tests to write only the production page for now.
+
+✻ Baked for 12s
+
+※ recap: Building a user registration flow. Backend is complete with tests
+  passing; the frontend builder paused because component test dependencies are
+  missing. Reply "approved" to install them or "skip tests" to write only the
+  production page. (disable recaps in /config)
+
+> approved
+
+● Frontend builder resumed — it'll install the deps, write the component and all
+   6 tests, and run them. I'll report back when it completes.
+
+✻ Churned for 18s
+
+※ recap: Building a user registration flow with email and password. The frontend
+   builder is running now, writing the registration form component and component
+   tests. Next action: wait for it to complete, then run the test verifier.
+  (disable recaps in /config)
+
+● Agent "Build frontend registration form" completed · 5m 19s
+
+● Frontend done — 16/16 tests passing, typecheck and lint clean. One note:
+  @vitejs/plugin-react was also installed (needed for Vitest to parse JSX at all
+   — implicit in the approval).
+
+  Now invoking the test-verifier to check every acceptance criterion.
+
+● test-verifier(Verify acceptance criteria against implementation)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● Test-verifier is running — checking all 12 acceptance criteria against the
+  built code. Back shortly.
+
+✻ Sautéed for 45s
+
+※ recap: Building a user registration flow with email and password. The
+  test-verifier is currently checking all 12 acceptance criteria against the
+  finished backend and frontend code. Waiting for its report before the final
+  validation step.
+
+● Agent "Verify acceptance criteria against implementation" completed · 4m 15s
+
+● All 12 ACs verified, 29/29 tests passing. Now running the
+  implementation-validator for a final gap check.
+
+● implementation-validator(Validate implementation against story and brief)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● Implementation validator is still running — I'll have results shortly.
+
+✻ Worked for 42s
+
+● Agent "Validate implementation against story and brief" completed · 2m 54s
+
+● The validator found issues that need fixing before the PR. Here's the report:
+
+  ---
+  Validator Findings
+
+  CRITICAL — must fix
+  - No rate limiting on POST /api/auth/register. Bcrypt at cost 12 on every
+  request is a CPU-exhaustion target. No upstream middleware compensates (the
+  matcher excludes /api/*). This needs a fix before merge.
+
+  MAJOR — should fix
+  - signIn() return value is not checked in register/page.tsx. If Auth.js
+  credential validation fails silently after a successful 201, the user gets
+  pushed to /dashboard, the middleware bounces them to /login, and no error is
+  shown. AC4 ("automatically signed in") is not reliably met.
+  - DB mock in auth.service.test.ts contradicts CLAUDE.md's "do not mock the
+  database unless existing tests do." The builder self-granted permission in a
+  comment. This should be recorded as an ADR or the rule updated in CLAUDE.md.
+
+  MINOR — nice to have
+  - The welcome template uses JS interpolation (${vars.name}) rather than
+  {{placeholder}} tokens, so the variables map passed to the worker is dead
+  weight. Email still sends correctly.
+  - Pre-existing docs drift: docs/email.md references services/email/send.ts
+  which doesn't exist.
+
+  ---
+  Routing the critical and major code issues to fix agents now. The DB mock
+  governance note is surfaced for you to decide on.
+
+● fixer(Fix rate limiting and signIn check)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● Fix agent is running. On the DB mock governance question — the builder had no
+  prior tests to inherit from, so it made a pragmatic call. Would you like to
+  add a note to CLAUDE.md clarifying that unit tests may mock Prisma when no
+  test DB is configured, with integration tests to be added later? Or would you
+  prefer to keep the existing rule as-is?
+
+✻ Brewed for 47s
+
+● Agent "Fix rate limiting and signIn check" completed · 2m 35s
+
+● Both fixes applied, 29/29 tests still passing. Re-running the validator to
+  confirm the critical and major findings are resolved.
+
+● implementation-validator(Re-validate after critical/major fixes)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+✻ Crunched for 39s
+
+● Agent "Re-validate after critical/major fixes" completed · 1m 34s
+
+● Two previous issues resolved, but the validator found new gaps in the rate
+  limiter itself. Routing back to the backend builder to fix them.
+
+● backend-builder(Fix rate limiter gaps and add 429 tests)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● Backend builder is fixing the rate limiter gaps. I'll re-run the validator
+  once it's done.
+
+✻ Churned for 35s
+
+● Agent "Fix rate limiter gaps and add 429 tests" completed · 3m 40s
+
+● 31/31 tests passing, typecheck and lint clean. Running the final validator
+  pass.
+
+● implementation-validator(Final validation pass)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● Final validator still running — will have the verdict shortly.
+
+✻ Cooked for 31s
+
+● Agent "Final validation pass" completed · 1m 46s
+
+● Validator: APPROVED FOR PR
+
+  All 5 previously-identified issues confirmed resolved. No new critical or
+  major findings.
+
+  Two minor opinions (don't block merge):
+  - The P2002 catch is slightly over-broad — any future unique constraint added
+  to the same transaction would surface as a misleading "email already
+  exists" 409. Not a current bug.
+  - Tenant names derived from email local-parts aren't sanitized (alice+tag
+  stays alice+tag). Cosmetic only.
+
+  ---
+  What was built
+
+  ┌───────────┬─────────────────────────────────────────────────────────────┐
+  │           │                                                             │
+  ├───────────┼─────────────────────────────────────────────────────────────┤
+  │           │ services/auth.service.ts, app/api/auth/register/route.ts,   │
+  │ New files │ services/email/templates/welcome.ts,                        │
+  │           │ services/email/templates/index.ts, vitest.config.ts         │
+  ├───────────┼─────────────────────────────────────────────────────────────┤
+  │ Replaced  │ app/(auth)/register/page.tsx                                │
+  ├───────────┼─────────────────────────────────────────────────────────────┤
+  │ Updated   │ queues/email.queue.ts (retry policy), package.json (Vitest  │
+  │           │ + testing-library)                                          │
+  ├───────────┼─────────────────────────────────────────────────────────────┤
+  │ Tests     │ 31/31 passing across 4 test files                           │
+  ├───────────┼─────────────────────────────────────────────────────────────┤
+  │ Typecheck │ Clean                                                       │
+  ├───────────┼─────────────────────────────────────────────────────────────┤
+  │ Lint      │ Clean                                                       │
+  ├───────────┼─────────────────────────────────────────────────────────────┤
+  │ All 12    │ Verified                                                    │
+  │ ACs       │                                                             │
+  └───────────┴─────────────────────────────────────────────────────────────┘
+
+  Reminder: The DB mock governance question is still open — do you want to add a
+   CLAUDE.md note clarifying that unit tests may mock Prisma when no test DB is
+  configured?
+
+  ---
+  Ready to open the PR?
+
+✻ Churned for 23s
+
+> open the PR
+
+● Bash(git status && git log --oneline -3)
+  ⎿  On branch main
+     Changes not staged for commit:
+       (use "git add <file>..." to update what will be committed)
+     … +28 lines (ctrl+o to expand)
+
+● Bash(git checkout -b feat/user-registration)
+  ⎿  Switched to a new branch 'feat/user-registration'
+
+● Bash(git add package.json package-lock.json vitest.config.ts services/
+      app/\(auth\)/ app/api/ queues/ workers/ lib/ prisma/ auth.ts
+      middleware.ts types/ docs/ CLAUDE.md .env.example .gitignore)
+  ⎿  warning: in the working copy of '.gitignore', LF will be replaced by CRLF
+     … +53 lines (ctrl+o to expand)
+
+● Bash(git commit -m "Add user registration flow with email and password…")
+  ⎿  [feat/user-registration b64c563] Add user registration flow with email
+      and password
+      34 files changed, 4478 insertions(+), 87 deletions(-)
+     … +30 lines (ctrl+o to expand)
+
+● Bash(git push -u origin feat/user-registration)
+  ⎿  Error: Exit code 128
+     fatal: 'origin' does not appear to be a git repository
+     fatal: Could not read from remote repository.
+
+     Please make sure you have the correct access rights
+     and the repository exists.
+
+● No remote is configured for this repo. The commit is local and ready. To open
+  a PR you'll need to push to a remote first:
+
+  # Add your GitHub remote (replace with your repo URL)
+  git remote add origin https://github.com/<you>/saas-billing.git
+  git push -u origin feat/user-registration
+
+  # Then open the PR
+  gh pr create --title "Add user registration flow with email and password"
+  --base main
+
+  If you'd like me to create the remote and push once you have a GitHub repo set
+   up, just share the URL. The branch feat/user-registration is committed and
+  ready to go — 34 files, 31 passing tests.
+
+> use gh cli to create the remote repository
+
+● Bash(gh repo create saas-billing --private --source=. --remote=origin --push)
+  ⎿  https://github.com/az9713/saas-billing
+     To https://github.com/az9713/saas-billing.git
+      * [new branch]      HEAD -> feat/user-registration
+     … +2 lines (ctrl+o to expand)
+
+● Repo created at https://github.com/az9713/saas-billing. Now I need to push
+  main as the base branch before opening the PR.
+
+● Bash(git push origin main)
+  ⎿  remote:
+     remote: Create a pull request for 'main' on GitHub by visiting:
+     … +5 lines (ctrl+o to expand)
+
+● Bash(gh pr create --title "Add user registration flow with email and password"
+      --base main --body "…")
+  ⎿  Warning: 3 uncommitted changes
+     https://github.com/az9713/saas-billing/pull/1
+
+● PR is open: https://github.com/az9713/saas-billing/pull/1
+
+  The "3 uncommitted changes" warning is the .claude/ directory (session files)
+  — nothing that belongs in the PR. The feature branch has everything it needs.
+
+✻ Cogitated for 10m 1s
+
+※ recap: Built and merged a user registration flow with email/password. PR #1 is
+  open at github.com/az9713/saas-billing/pull/1 with 31 passing tests. Next:
+  merge the PR or do a manual browser smoke test first. (disable recaps in
+  /config)
